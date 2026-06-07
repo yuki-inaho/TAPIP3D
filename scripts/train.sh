@@ -55,14 +55,14 @@ PORT=${PORT:-29500}
 
 echo "=> Launching training with accelerate..."
 if [ $ngpus -gt 1 ]; then
-  accelerate launch \
+  uv run accelerate launch \
     --main_process_port $PORT \
     --gpu_ids all \
     --multi_gpu \
     --num_processes $ngpus \
     train_eval.py --config-name $config_name "${args[@]}"
 else
-  accelerate launch \
+  uv run accelerate launch \
     --main_process_port $PORT \
     --gpu_ids all \
     --num_processes $ngpus \

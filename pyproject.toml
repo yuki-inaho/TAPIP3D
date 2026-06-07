@@ -1,0 +1,75 @@
+[project]
+name = "tapip3d"
+version = "0.1.0"
+description = "TAPIP3D: Tracking Any Point in Persistent 3D Geometry"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+
+# Core dependencies (originally requirements.txt) + the PyTorch stack that the
+# README installed separately. The torch* packages are pinned to the CUDA 12.4
+# build via [tool.uv.sources] below.
+dependencies = [
+    "torch==2.4.1",
+    "torchvision==0.19.1",
+    "torchaudio==2.4.1",
+    "av",
+    "typed-argument-parser",
+    "hydra-core",
+    "einops",
+    "rich",
+    "tqdm",
+    "scipy",
+    "h5py",
+    "kornia",
+    "sophuspy",
+    "opencv-python",
+    "rerun-sdk~=0.21",
+    "numpy<2",
+    "matplotlib",
+    "imageio[ffmpeg]",
+    "trimesh",
+    "huggingface_hub",
+    "python-box[all]~=7.0",
+    "timm",
+    "wandb",
+    "accelerate==1.0.1",
+    "transformers==4.57.3",
+]
+
+[project.optional-dependencies]
+# Monocular (MegaSAM) path. Heavy and requires extra CUDA extensions
+# (lietorch / droid backends + torch-scatter). Not needed for the
+# known-depth .npz inference path. Install with: uv sync --extra megasam
+megasam = [
+    "xformers>=0.0.27",
+]
+
+[dependency-groups]
+# Dev tooling (tests) + build tools needed to compile the local CUDA extensions
+# (pointops2 / megasam) via `python setup.py install`. uv does not seed
+# setuptools into the venv by default. Install with: uv sync --group dev
+dev = [
+    "pytest>=8",
+    "setuptools",
+    "wheel",
+    "ninja",
+]
+
+# ---------------------------------------------------------------------------
+# uv configuration
+# ---------------------------------------------------------------------------
+[tool.uv]
+# This is an application/research repo, not an installable library: do not try
+# to build & install the project itself into the environment.
+package = false
+
+# PyTorch CUDA 12.4 wheels (works on GTX 1070 / sm_61 .. modern GPUs).
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }

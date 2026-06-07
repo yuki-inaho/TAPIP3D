@@ -32,7 +32,54 @@ We provide a detailed [video illustration](https://neurips.cc/virtual/2025/loc/s
 ## Installation
 ### Installing dependencies
 
-1. Prepare the environment
+This project is managed with [uv](https://docs.astral.sh/uv/). The legacy
+conda/pip instructions are kept at the end of this section for reference.
+
+1. Install the core dependencies. This creates a local `.venv` with Python 3.10
+   and the CUDA 12.4 PyTorch build. The `dev` group also pulls in the build
+   tools (`setuptools`/`wheel`/`ninja`) needed to compile the CUDA extensions:
+
+```bash
+uv sync --group dev
+```
+
+2. Compile pointops2 (required for inference). The helper script builds the
+   extension for the GPU arch in `TORCH_CUDA_ARCH_LIST` (default `6.1` for GTX
+   10xx; `7.5` for RTX 20xx, `8.6` for RTX 30xx, `8.9` for RTX 40xx):
+
+```bash
+TORCH_CUDA_ARCH_LIST=6.1 bash scripts/build_extensions.sh
+```
+
+   or manually:
+
+```bash
+cd third_party/pointops2
+TORCH_CUDA_ARCH_LIST="6.1" CUDA_HOME=/usr/local/cuda uv run python setup.py install
+cd ../..
+```
+
+   > **Note:** `uv sync` removes packages that are not tracked in `uv.lock`, so it
+   > uninstalls the locally-built `pointops2`. Re-run this step (or
+   > `scripts/build_extensions.sh`) after every `uv sync`.
+
+3. (Optional — only for monocular RGB videos via MegaSAM; **slow** and requires
+   several extra checkpoints, so prefer the RGB-D / known-depth `.npz` path on
+   small GPUs) install the extra dependencies and compile the MegaSAM backends:
+
+```bash
+uv sync --extra megasam
+cd third_party/megasam/base
+TORCH_CUDA_ARCH_LIST="6.1" CUDA_HOME=/usr/local/cuda uv run python setup.py install
+cd ../../..
+```
+
+Afterwards, prefix commands with `uv run` (e.g. `uv run python inference.py ...`)
+or activate the environment with `source .venv/bin/activate`.
+
+<details>
+<summary>Legacy conda / pip instructions</summary>
+
 ```bash
 conda create -n tapip3d python=3.10
 conda activate tapip3d
@@ -40,22 +87,16 @@ conda activate tapip3d
 pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 "xformers>=0.0.27" --index-url https://download.pytorch.org/whl/cu124
 pip install torch-scatter -f https://data.pyg.org/whl/torch-2.4.1+cu124.html
 pip install -r requirements.txt
-```
 
-2. Compile pointops2
-
-```bash
 cd third_party/pointops2
 LIBRARY_PATH=$CONDA_PREFIX/lib:$LIBRARY_PATH python setup.py install
 cd ../..
-```
 
-3. Compile megasam
-```bash
 cd third_party/megasam/base
 LIBRARY_PATH=$CONDA_PREFIX/lib:$LIBRARY_PATH python setup.py install
 cd ../../..
 ```
+</details>
 
 ### Downloading checkpoints
 
@@ -87,6 +128,12 @@ For demonstration purposes, the script uses a 32x32 grid of points at the first 
 
 By providing an video as `--input_path`, the script first runs [MegaSAM](https://github.com/mega-sam/mega-sam) with [MoGe](https://wangrc.site/MoGePage/) to estimate depth maps and camera parameters. Subsequently, the model will process these inputs within the global frame.
 
+> **Note:** the monocular path runs a heavy multi-stage pipeline (DepthAnything +
+> UniDepth + MoGe + DROID-SLAM + RAFT + CVD optimization) and needs extra
+> checkpoints (`megasam_final.pth`, `raft-things.pth`, `depth_anything_vitl14.pth`).
+> It is **slow** and memory-hungry on small GPUs. If you already have depth maps,
+> prefer the known-depth `.npz` path described below.
+
 **Demo 1**
 
 <img src="./media/demo1.gif" width="100%" alt="Demo 1">
@@ -94,13 +141,13 @@ By providing an video as `--input_path`, the script first runs [MegaSAM](https:/
 To run inference:
 
 ```bash
-python inference.py --input_path demo_inputs/sheep.mp4 --checkpoint checkpoints/tapip3d_final.pth --resolution_factor 2
+uv run python inference.py --input_path demo_inputs/sheep.mp4 --checkpoint checkpoints/tapip3d_final.pth --resolution_factor 2
 ```
 
 An npz file will be saved to `outputs/inference/`. To visualize the results:
 
 ```bash
-python visualize.py <result_npz_path>
+uv run python visualize.py <result_npz_path>
 ```
 
 **Demo 2**
@@ -108,7 +155,7 @@ python visualize.py <result_npz_path>
 <img src="./media/demo2.gif" width="100%" alt="Demo 2">
 
 ```bash
-python inference.py --input_path demo_inputs/pstudio.mp4 --checkpoint checkpoints/tapip3d_final.pth --resolution_factor 2
+uv run python inference.py --input_path demo_inputs/pstudio.mp4 --checkpoint checkpoints/tapip3d_final.pth --resolution_factor 2
 ```
 
 **Inference with Known Depths and Camera Parameters**
@@ -121,8 +168,39 @@ We provide one example `.npz` file at [here](https://huggingface.co/zbww/tapip3d
 <img src="./media/demo3.gif" width="100%" alt="Demo 3">
 
 ```bash
-python inference.py --input_path demo_inputs/dexycb.npz --checkpoint checkpoints/tapip3d_final.pth --resolution_factor 2
+uv run python inference.py --input_path demo_inputs/dexycb.npz --checkpoint checkpoints/tapip3d_final.pth --resolution_factor 2
 ```
+
+## Testing
+
+```bash
+uv run pytest
+```
+
+The suite covers the pure inference helpers on CPU (`resize_depth_bilinear`,
+`get_grid_queries`, autocast precision selection) plus a GPU smoke test that runs
+a tiny end-to-end inference on synthetic input. The GPU test is skipped
+automatically when there is no CUDA device or no downloaded checkpoint.
+
+## Running on older / smaller GPUs (e.g. GTX 1070, 8 GB)
+
+- **Precision.** Pascal GPUs have no native bfloat16. `inference.py` picks the
+  precision automatically (`--precision auto`, the default): bf16 on Ampere or
+  newer (sm_80+) and fp16 on older cards. Override with
+  `--precision {auto,bf16,fp16,fp32}` if needed.
+- **CUDA arch.** Build `pointops2` (and optionally MegaSAM) with
+  `TORCH_CUDA_ARCH_LIST` matching your card (`6.1` for GTX 10xx), otherwise you
+  will hit `CUDA error: no kernel image is available for execution on the device`.
+- **Measured VRAM** for the known-depth path on `demo_inputs/dexycb.npz`
+  (72 frames, 32×32 query grid, fp16) on a single GTX 1070:
+
+  | `--resolution_factor` | inference res | peak allocated | peak reserved |
+  | --- | --- | --- | --- |
+  | 1 | 384×512 | 2.97 GB | 4.10 GB |
+  | 2 | 543×724 | 5.85 GB | 6.20 GB |
+
+  Both fit within 8 GB. The monocular (MegaSAM) path needs substantially more
+  memory and additional CUDA extensions.
 
 ## Training and Evaluation
 

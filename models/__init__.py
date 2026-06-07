@@ -1,7 +1,7 @@
 from hydra import initialize_config_dir, compose
 import torch
 from pathlib import Path
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 import typing
 from typing import Any, Dict, Tuple, Union
 import torch.nn as nn
@@ -33,7 +33,18 @@ def from_pretrained(ckpt_path: Union[str, Path]) -> Tuple[nn.Module, DictConfig]
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     if "cfg" in ckpt:
         cfg = ckpt["cfg"]
-        model = from_config(cfg['model'], image_size=cfg['train_dataset']['resolution']) # checkpoint trained by our code
+        model_cfg = cfg['model']
+        # The CoTracker CNN encoder fetches pretrained weights from torch.hub at
+        # construction time, but they are immediately overwritten by the
+        # checkpoint below. Skip that network round-trip when loading a finished
+        # checkpoint for inference / resume.
+        try:
+            if OmegaConf.select(model_cfg, "encoder.pretrained") is True:
+                with open_dict(model_cfg):
+                    model_cfg.encoder.pretrained = False
+        except Exception as e:  # pragma: no cover - best-effort optimization
+            logger.warning(f"Could not disable encoder.pretrained for loading: {e}")
+        model = from_config(model_cfg, image_size=cfg['train_dataset']['resolution']) # checkpoint trained by our code
         model.load_state_dict(ckpt["weight"], strict=True)
     else:
         model, cfg = smart_load(ckpt) # checkpoint trained by others

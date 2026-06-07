@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import shlex
+import contextlib
 import tap
 import torch
 from typing import Optional, Tuple
@@ -32,6 +33,7 @@ class Arguments(tap.Tap):
     checkpoint: Optional[str] = None
     output_dir: str = "outputs/inference"
     depth_model: str = "moge"
+    precision: str = "auto"  # auto | bf16 | fp16 | fp32
 
 def prepare_inputs(input_path: str, inference_res: Tuple[int, int], support_grid_size: int, num_threads: int = 8, device: str = "cpu"):
     if not Path (input_path).is_file():
@@ -97,6 +99,45 @@ def prepare_inputs(input_path: str, inference_res: Tuple[int, int], support_grid
 
     return video, depths, intrinsics, extrinsics, query_point, support_grid_size
 
+def resolve_autocast(precision: str, device: str):
+    """Pick an autocast context that works on the current GPU.
+
+    GTX 10xx / Pascal GPUs (and older) do not support bfloat16, so ``auto``
+    transparently falls back to float16 on such devices. ``fp32`` disables
+    autocast entirely (most memory-hungry, but most numerically robust).
+    """
+    if device != "cuda" or not torch.cuda.is_available():
+        logger.info("CUDA not used; running inference in float32")
+        return contextlib.nullcontext()
+
+    major = torch.cuda.get_device_capability()[0]
+
+    if precision == "auto":
+        # Native bf16 matmul requires Ampere (sm_80) or newer. Older GPUs
+        # (e.g. Pascal GTX 10xx) still report is_bf16_supported()==True via slow
+        # emulation, so gate on the actual compute capability instead.
+        precision = "bf16" if major >= 8 else "fp16"
+        logger.info(
+            f"Auto-selected inference precision: {precision} (compute capability {major}.x)"
+        )
+
+    if precision == "fp32":
+        return torch.autocast("cuda", enabled=False)
+
+    if precision == "bf16" and major < 8:
+        logger.warning(
+            "This GPU has no native bfloat16 support; bf16 will be emulated and slow. "
+            "Consider --precision fp16 or --precision fp32."
+        )
+
+    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(precision)
+    if dtype is None:
+        raise ValueError(
+            f"Unknown precision: {precision!r} (expected auto/bf16/fp16/fp32)"
+        )
+    return torch.autocast("cuda", dtype=dtype)
+
+
 if __name__ == "__main__":
     setup_logger()
     args = Arguments().parse_args()
@@ -121,7 +162,7 @@ if __name__ == "__main__":
     )
 
     # Run inference
-    with torch.autocast("cuda", dtype=torch.bfloat16):
+    with resolve_autocast(args.precision, args.device):
         coords, visibs = inference(
             model=model,
             video=video,
@@ -133,6 +174,13 @@ if __name__ == "__main__":
             grid_size=support_grid_size,
         )
     
+    if args.device == "cuda" and torch.cuda.is_available():
+        logger.info(
+            "Peak GPU memory during inference: "
+            f"allocated={torch.cuda.max_memory_allocated() / 1e9:.2f} GB, "
+            f"reserved={torch.cuda.max_memory_reserved() / 1e9:.2f} GB"
+        )
+
     # Save results
     video = video.cpu().numpy()
     depths = depths.cpu().numpy()
